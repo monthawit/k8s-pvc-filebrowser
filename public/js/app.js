@@ -10,6 +10,7 @@ const state = {
   files: [],
   s3Prefix: '',
   s3Bucket: '',
+  s3FlatMode: false,
   companyName: 'PVC File Browser',
   logoSrc: '',
 };
@@ -48,7 +49,7 @@ const api = {
   s3: {
     getConfig: () => api.get('/api/s3/config'),
     saveConfig: (cfg) => api.post('/api/s3/config', cfg),
-    list: (prefix, bucket) => api.get(`/api/s3/list?prefix=${encodeURIComponent(prefix)}&bucket=${encodeURIComponent(bucket || '')}`),
+    list: (prefix, bucket, flat) => api.get(`/api/s3/list?prefix=${encodeURIComponent(prefix)}&bucket=${encodeURIComponent(bucket || '')}&flat=${flat ? 'true' : 'false'}`),
     copyToPvc: (key, bucket, targetPath) => api.post('/api/s3/copy-to-pvc', { key, bucket, targetPath }),
     downloadUrl: (key, bucket) => `/api/s3/download?key=${encodeURIComponent(key)}&bucket=${encodeURIComponent(bucket || '')}`,
     previewUrl: (key, bucket) => `/api/s3/preview?key=${encodeURIComponent(key)}&bucket=${encodeURIComponent(bucket || '')}`,
@@ -499,9 +500,123 @@ function toggleSelect(fp, card) {
 function updateSelectionBar() {
   const bar = document.getElementById('selection-bar');
   const count = state.selected.size;
-  document.getElementById('selection-count').textContent = `${count} selected`;
+  const total = state.files.length;
+  const allBtn = document.getElementById('btn-select-all');
+  document.getElementById('selection-count').textContent = `${count} of ${total} selected`;
+  if (allBtn) allBtn.textContent = (count === total && total > 0) ? '✕ Deselect All' : '☑ Select All';
   if (count > 0) bar.classList.remove('hidden');
   else bar.classList.add('hidden');
+}
+
+function clearSelection() {
+  state.selected.clear();
+  document.querySelectorAll('.file-card.selected').forEach(c => c.classList.remove('selected'));
+  document.querySelectorAll('.row-check:checked').forEach(c => { c.checked = false; c.closest('tr')?.classList.remove('selected'); });
+  const sa = document.getElementById('select-all');
+  if (sa) sa.checked = false;
+  updateSelectionBar();
+}
+
+function showBulkPermissionsModal(paths) {
+  const count = paths.length;
+  showModal(`
+    <div class="modal-header">
+      <h2>Change Permissions</h2>
+      <p>Apply to <strong>${count} selected item${count > 1 ? 's' : ''}</strong></p>
+    </div>
+    <div class="modal-body">
+      <div class="divider"></div>
+      <h4 style="margin-bottom:12px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-light)">chmod — Change Mode</h4>
+      <div class="field-row">
+        <label>Octal Mode</label>
+        <input id="bulk-chmod-mode" type="text" value="755" placeholder="777" maxlength="4" style="font-size:20px;font-weight:700;letter-spacing:4px;font-family:monospace" />
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        ${[['777','All read/write/exec'],['755','Standard dirs'],['644','Standard files'],['600','Owner only'],['775','Group write']].map(([m,d]) =>
+          `<button class="btn btn-sm quick-mode" data-mode="${m}" title="${d}">${m}</button>`
+        ).join('')}
+      </div>
+      <div class="checkbox-row" style="margin-bottom:16px">
+        <input type="checkbox" id="bulk-chmod-recursive" checked />
+        <label for="bulk-chmod-recursive">Recursive (apply to contents of folders)</label>
+      </div>
+      <button class="btn btn-gradient w-full" id="apply-bulk-chmod" style="justify-content:center">
+        Apply chmod to ${count} item${count > 1 ? 's' : ''}
+      </button>
+
+      <div class="divider"></div>
+      <h4 style="margin-bottom:12px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-light)">chown — Change Ownership</h4>
+      <div class="row-2">
+        <div class="field-row">
+          <label>UID</label>
+          <input id="bulk-chown-uid" type="number" placeholder="1000" min="0" />
+        </div>
+        <div class="field-row">
+          <label>GID</label>
+          <input id="bulk-chown-gid" type="number" placeholder="1000" min="0" />
+        </div>
+      </div>
+      <div class="hint" style="margin-bottom:10px">Check <strong>System</strong> tab for current UID/GID. Requires root or CAP_CHOWN.</div>
+      <div class="checkbox-row" style="margin-bottom:16px">
+        <input type="checkbox" id="bulk-chown-recursive" checked />
+        <label for="bulk-chown-recursive">Recursive</label>
+      </div>
+      <button class="btn btn-gradient w-full" id="apply-bulk-chown" style="justify-content:center">
+        Apply chown to ${count} item${count > 1 ? 's' : ''}
+      </button>
+
+      <div id="bulk-perms-result" style="margin-top:14px"></div>
+    </div>
+  `);
+
+  document.querySelectorAll('.quick-mode').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('bulk-chmod-mode').value = btn.dataset.mode;
+      document.querySelectorAll('.quick-mode').forEach(b => b.classList.remove('btn-gradient'));
+      btn.classList.add('btn-gradient');
+    });
+  });
+
+  document.getElementById('apply-bulk-chmod').addEventListener('click', async () => {
+    const mode = document.getElementById('bulk-chmod-mode').value.trim();
+    const recursive = document.getElementById('bulk-chmod-recursive').checked;
+    if (!mode) return;
+
+    const resultEl = document.getElementById('bulk-perms-result');
+    resultEl.innerHTML = `<div class="loading-spinner" style="padding:12px 0"><div class="spinner"></div></div>`;
+
+    let ok = 0, fail = 0;
+    for (const p of paths) {
+      const r = await api.files.chmod(p, mode, recursive);
+      if (r && r.success) ok++; else fail++;
+    }
+
+    resultEl.innerHTML = `<div class="toast ${fail === 0 ? 'success' : 'error'}" style="position:static;animation:none;margin-top:8px">
+      ${fail === 0 ? '✓' : '✕'} chmod ${mode}: ${ok} succeeded${fail > 0 ? `, ${fail} failed (may need root)` : ''}
+    </div>`;
+    if (ok > 0) { await loadFiles(state.currentPath); }
+  });
+
+  document.getElementById('apply-bulk-chown').addEventListener('click', async () => {
+    const uid = document.getElementById('bulk-chown-uid').value;
+    const gid = document.getElementById('bulk-chown-gid').value;
+    const recursive = document.getElementById('bulk-chown-recursive').checked;
+    if (!uid || !gid) { toast('Enter both UID and GID', 'error'); return; }
+
+    const resultEl = document.getElementById('bulk-perms-result');
+    resultEl.innerHTML = `<div class="loading-spinner" style="padding:12px 0"><div class="spinner"></div></div>`;
+
+    let ok = 0, fail = 0;
+    for (const p of paths) {
+      const r = await api.files.chown(p, parseInt(uid), parseInt(gid), recursive);
+      if (r && r.success) ok++; else fail++;
+    }
+
+    resultEl.innerHTML = `<div class="toast ${fail === 0 ? 'success' : 'error'}" style="position:static;animation:none;margin-top:8px">
+      ${fail === 0 ? '✓' : '✕'} chown ${uid}:${gid}: ${ok} succeeded${fail > 0 ? `, ${fail} failed (needs root/CAP_CHOWN)` : ''}
+    </div>`;
+    if (ok > 0) { await loadFiles(state.currentPath); }
+  });
 }
 
 // ─── Context Menu ─────────────────────────────────────────────────────────────
@@ -950,12 +1065,21 @@ document.getElementById('btn-sel-delete').addEventListener('click', () => {
 });
 document.getElementById('btn-sel-move').addEventListener('click', () => showMoveModal(Array.from(state.selected), 'move'));
 document.getElementById('btn-sel-copy').addEventListener('click', () => showMoveModal(Array.from(state.selected), 'copy'));
-document.getElementById('btn-sel-clear').addEventListener('click', () => {
-  state.selected.clear();
-  document.querySelectorAll('.file-card.selected').forEach(c => c.classList.remove('selected'));
-  document.querySelectorAll('.row-check:checked').forEach(c => { c.checked = false; c.closest('tr')?.classList.remove('selected'); });
-  document.getElementById('select-all') && (document.getElementById('select-all').checked = false);
-  updateSelectionBar();
+document.getElementById('btn-sel-perms').addEventListener('click', () => showBulkPermissionsModal(Array.from(state.selected)));
+document.getElementById('btn-sel-clear').addEventListener('click', clearSelection);
+
+document.getElementById('btn-select-all').addEventListener('click', () => {
+  const allSelected = state.files.every(f => state.selected.has(f.path));
+  if (allSelected) {
+    clearSelection();
+  } else {
+    state.files.forEach(f => state.selected.add(f.path));
+    document.querySelectorAll('.file-card').forEach(c => c.classList.add('selected'));
+    document.querySelectorAll('.row-check').forEach(c => { c.checked = true; c.closest('tr')?.classList.add('selected'); });
+    const sa = document.getElementById('select-all');
+    if (sa) sa.checked = true;
+    updateSelectionBar();
+  }
 });
 
 // ─── S3 View ──────────────────────────────────────────────────────────────────
@@ -976,36 +1100,87 @@ async function loadS3View() {
 async function loadS3(prefix) {
   state.s3Prefix = prefix;
   renderS3Breadcrumb(prefix);
+
   const container = document.getElementById('s3-container');
+  const errBanner = document.getElementById('s3-error');
   container.classList.remove('hidden');
+  errBanner.classList.add('hidden');
   container.innerHTML = '<div class="loading-spinner"><div class="spinner"></div></div>';
 
-  const data = await api.s3.list(prefix, state.s3Bucket);
+  const data = await api.s3.list(prefix, state.s3Bucket, state.s3FlatMode);
   if (!data) return;
 
-  if (!data.items || data.items.length === 0) {
-    container.innerHTML = '<div class="file-empty"><p>No objects found</p></div>';
+  // Show error if S3 returned one
+  if (data.error) {
+    container.innerHTML = '';
+    errBanner.classList.remove('hidden');
+    errBanner.innerHTML = `
+      <div class="s3-error-icon">⚠</div>
+      <div class="s3-error-body">
+        <strong>S3 Error</strong>
+        <code>${data.error}</code>
+        <div class="s3-error-tips">
+          <p>Common fixes for Ceph / MinIO:</p>
+          <ul>
+            <li>Enable <strong>Force Path Style</strong> in S3 config</li>
+            <li>Check the <strong>Endpoint URL</strong> (e.g. <code>http://ceph-rgw:7480</code>)</li>
+            <li>Verify <strong>Access Key</strong> and <strong>Secret Key</strong></li>
+            <li>Confirm the <strong>Bucket name</strong> is correct</li>
+            <li>Try switching to <strong>Flat List</strong> mode (button in toolbar)</li>
+          </ul>
+        </div>
+        <button class="btn btn-sm" id="s3-open-cfg-from-err">Open S3 Config</button>
+      </div>`;
+    document.getElementById('s3-open-cfg-from-err')?.addEventListener('click', showS3ConfigModal);
     return;
   }
 
-  container.innerHTML = data.items.map(item => {
+  const items = data.items || [];
+
+  if (items.length === 0) {
+    container.innerHTML = `
+      <div class="file-empty">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        <p>No objects found in <strong>${state.s3Bucket}${prefix ? ' / ' + prefix : ''}</strong></p>
+        <p style="font-size:12px;color:var(--text-light);margin-top:4px">
+          ${state.s3FlatMode
+            ? 'Bucket appears empty or the key prefix has no objects.'
+            : 'No objects at this level. Try <strong>Flat List</strong> mode to see all keys.'}
+        </p>
+        ${!state.s3FlatMode ? `<button class="btn btn-sm" id="try-flat-btn">Switch to Flat List</button>` : ''}
+      </div>`;
+    document.getElementById('try-flat-btn')?.addEventListener('click', () => {
+      state.s3FlatMode = true;
+      updateS3FlatButton();
+      loadS3('');
+    });
+    return;
+  }
+
+  const truncatedNote = data.truncated
+    ? `<div class="s3-truncated-note">Showing first 1000 objects. Use a prefix to narrow results.</div>`
+    : '';
+
+  container.innerHTML = truncatedNote + items.map(item => {
     const cat = item.isDirectory ? 'dir' : mimeCategory(item.mimeType, item.name);
     const c = COLORS[cat] || '#9E9E9E';
     const icon = item.isDirectory
       ? `<svg viewBox="0 0 24 24" fill="${c}"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>`
       : `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
 
-    return `<div class="file-card" data-key="${item.key}" data-isdir="${item.isDirectory}">
+    const escapedKey = item.key.replace(/"/g, '&quot;');
+    return `<div class="file-card" data-key="${escapedKey}" data-isdir="${item.isDirectory}">
       <div class="file-card-icon">${icon}</div>
       <div class="file-card-name" title="${item.name}">${item.name}</div>
-      <div class="file-card-meta">${item.isDirectory ? 'Prefix' : fmtSize(item.size)}</div>
+      <div class="file-card-meta">${item.isDirectory ? 'Folder' : fmtSize(item.size)}</div>
     </div>`;
   }).join('');
 
   container.querySelectorAll('.file-card').forEach(card => {
     const key = card.dataset.key;
     const isDir = card.dataset.isdir === 'true';
-    const item = data.items.find(i => i.key === key);
+    const item = items.find(i => i.key === key);
+    if (!item) return;
 
     card.addEventListener('click', () => {
       if (isDir) loadS3(key);
@@ -1014,28 +1189,29 @@ async function loadS3(prefix) {
 
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      if (!isDir) {
-        const iconSvg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">${p}</svg>`;
-        showContextMenu(e.clientX, e.clientY, [
-          {
-            label: 'Preview', action: 'preview',
-            icon: iconSvg('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'),
-            handler: () => previewS3(item)
-          },
-          {
-            label: 'Download', action: 'dl',
-            icon: iconSvg('<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
-            handler: () => window.open(api.s3.downloadUrl(key, state.s3Bucket), '_blank')
-          },
-          {
-            label: 'Copy to PVC...', action: 'copy',
-            icon: iconSvg('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>'),
-            handler: () => showS3CopyModal(item)
-          },
-        ]);
-      }
+      const iconSvg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">${p}</svg>`;
+      const menuItems = isDir
+        ? [{ label: 'Open', action: 'open', icon: iconSvg('<path d="M5 12h14M12 5l7 7-7 7"/>'), handler: () => loadS3(key) }]
+        : [
+            { label: 'Preview', action: 'preview', icon: iconSvg('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'), handler: () => previewS3(item) },
+            { label: 'Download', action: 'dl', icon: iconSvg('<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>'), handler: () => window.open(api.s3.downloadUrl(key, state.s3Bucket), '_blank') },
+            { label: 'Copy to PVC...', action: 'copy', icon: iconSvg('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>'), handler: () => showS3CopyModal(item) },
+          ];
+      showContextMenu(e.clientX, e.clientY, menuItems);
     });
   });
+}
+
+function updateS3FlatButton() {
+  const btn = document.getElementById('btn-s3-flat');
+  if (!btn) return;
+  if (state.s3FlatMode) {
+    btn.classList.add('btn-gradient');
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Flat List`;
+  } else {
+    btn.classList.remove('btn-gradient');
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Tree View`;
+  }
 }
 
 function renderS3Breadcrumb(prefix) {
@@ -1222,6 +1398,12 @@ function showS3ConfigModal() {
 
 document.getElementById('btn-s3-config').addEventListener('click', showS3ConfigModal);
 document.getElementById('btn-s3-config-2').addEventListener('click', showS3ConfigModal);
+document.getElementById('btn-s3-refresh').addEventListener('click', () => loadS3(state.s3Prefix));
+document.getElementById('btn-s3-flat').addEventListener('click', () => {
+  state.s3FlatMode = !state.s3FlatMode;
+  updateS3FlatButton();
+  loadS3('');
+});
 
 // ─── System Info View ─────────────────────────────────────────────────────────
 async function loadSystemView() {
@@ -1245,9 +1427,12 @@ async function loadSystemView() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 10-16 0"/></svg>
           Process Identity
         </h3>
-        <div class="info-row"><span class="info-label">Username</span><span class="info-value">${info.idOutput}</span></div>
         <div class="info-row"><span class="info-label">UID</span><span class="info-value info-badge grad">${info.uid}</span></div>
         <div class="info-row"><span class="info-label">GID</span><span class="info-value info-badge grad">${info.gid}</span></div>
+        <div style="padding:8px 0">
+          <div class="info-label" style="margin-bottom:6px">id output</div>
+          <code style="display:block;background:#1a1a2e;color:#e8e8f0;padding:8px 10px;border-radius:8px;font-size:11px;word-break:break-all;white-space:pre-wrap;line-height:1.6">${info.idOutput}</code>
+        </div>
       </div>
 
       <div class="info-card">

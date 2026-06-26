@@ -430,22 +430,26 @@ app.get('/api/s3/list', requireAuth, async (req, res) => {
     const client = buildS3Client();
     const bucket = req.query.bucket || s3Cfg.bucket;
     const prefix = req.query.prefix || '';
+    const flat = req.query.flat === 'true';   // flat=true → no Delimiter, list all keys
 
-    const cmd = new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, Delimiter: '/' });
+    const cmdParams = { Bucket: bucket, Prefix: prefix, MaxKeys: 1000 };
+    if (!flat) cmdParams.Delimiter = '/';
+
+    const cmd = new ListObjectsV2Command(cmdParams);
     const data = await client.send(cmd);
 
     const items = [
-      ...(data.CommonPrefixes || []).map(p => ({
+      ...(!flat ? (data.CommonPrefixes || []).map(p => ({
         key: p.Prefix,
         name: p.Prefix.replace(prefix, '').replace(/\/$/, '') || p.Prefix,
         isDirectory: true,
         size: 0,
-      })),
+      })) : []),
       ...(data.Contents || [])
-        .filter(c => c.Key !== prefix)
+        .filter(c => c.Key !== prefix && c.Key !== '')
         .map(c => ({
           key: c.Key,
-          name: c.Key.split('/').pop(),
+          name: flat ? c.Key : (c.Key.split('/').pop() || c.Key),
           isDirectory: false,
           size: c.Size,
           modified: c.LastModified,
@@ -454,7 +458,7 @@ app.get('/api/s3/list', requireAuth, async (req, res) => {
         })),
     ];
 
-    res.json({ bucket, prefix, items, truncated: data.IsTruncated });
+    res.json({ bucket, prefix, flat, items, truncated: data.IsTruncated, totalKeys: data.KeyCount });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
