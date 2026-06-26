@@ -95,8 +95,17 @@ spec:
             #       name: filebrowser-config
             #       key: S3_PATH_STYLE
           volumeMounts:
+            # ── Change mountPath to match your DATA_PATH ─────────────────────
+            # Example 1: default
             - name: data
               mountPath: /data
+            # Example 2: custom path — also set DATA_PATH=/mydata in configmap
+            # - name: data
+            #   mountPath: /mydata
+            # Example 3: mount at /app1
+            # - name: data
+            #   mountPath: /app1
+            # ─────────────────────────────────────────────────────────────────
             # Optional: mount a custom logo
             # - name: logo
             #   mountPath: /app/public/logo.png
