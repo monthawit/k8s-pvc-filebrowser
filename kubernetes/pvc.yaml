@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: filebrowser-data
+  namespace: filebrowser
+  labels:
+    app.kubernetes.io/name: k8s-pvc-filebrowser
+spec:
+  accessModes:
+    - ReadWriteMany       # Use ReadWriteOnce if RWX not supported by your storage class
+  storageClassName: ""    # Set your StorageClass name (e.g. nfs-client, longhorn, cephfs)
+  resources:
+    requests:
+      storage: 100Gi

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebrowser-config
+  namespace: filebrowser
+  labels:
+    app.kubernetes.io/name: k8s-pvc-filebrowser
+data:
+  # ── App Identity ──────────────────────────────────────────────────────────
+  COMPANY_NAME: "My Company"
+  # LOGO_URL: "https://example.com/logo.png"   # External URL for company logo
+
+  # ── Storage ───────────────────────────────────────────────────────────────
+  DATA_PATH: "/data"
+
+  # ── S3 Compatible Storage (optional) ─────────────────────────────────────
+  # S3_ENDPOINT: "http://minio.minio.svc.cluster.local:9000"
+  # S3_BUCKET: "my-bucket"
+  # S3_REGION: "us-east-1"
+  # S3_PATH_STYLE: "true"     # Required for MinIO / self-hosted S3
+
+  # ── Upload limit ──────────────────────────────────────────────────────────
+  # MAX_FILE_SIZE: "53687091200"  # 50 GB (bytes)

@@ -1,0 +1,51 @@
+# ── Standard Kubernetes Ingress (nginx / traefik) ────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: filebrowser
+  namespace: filebrowser
+  labels:
+    app.kubernetes.io/name: k8s-pvc-filebrowser
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"           # No upload size limit
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"     # 1 hour for large uploads
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # traefik.ingress.kubernetes.io/router.entrypoints: websecure  # Uncomment for Traefik TLS
+    # cert-manager.io/cluster-issuer: letsencrypt-prod            # Uncomment for auto-TLS
+spec:
+  ingressClassName: nginx    # Change to 'traefik' or your ingress class
+  rules:
+    - host: filebrowser.example.com    # Change to your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: filebrowser
+                port:
+                  number: 80
+  # tls:
+  #   - hosts:
+  #       - filebrowser.example.com
+  #     secretName: filebrowser-tls
+
+---
+# ── OpenShift / OKD Route ──────────────────────────────────────────────────
+# Use this instead of Ingress on OpenShift/OKD clusters:
+#
+# apiVersion: route.openshift.io/v1
+# kind: Route
+# metadata:
+#   name: filebrowser
+#   namespace: filebrowser
+# spec:
+#   host: filebrowser.apps.cluster.example.com
+#   to:
+#     kind: Service
+#     name: filebrowser
+#   port:
+#     targetPort: http
+#   tls:
+#     termination: edge
+#     insecureEdgeTerminationPolicy: Redirect
