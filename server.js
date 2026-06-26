@@ -21,6 +21,27 @@ const PORT = parseInt(process.env.PORT || '3000');
 const DATA_PATH = path.resolve(process.env.DATA_PATH || '/data');
 const TEMP_PATH = process.env.TEMP_PATH || '/tmp/pvcbrowser-uploads';
 
+// ─── Multi-volume support ─────────────────────────────────────────────────────
+// VOLUMES env var format: "label1:/mount/path1,label2:/mount/path2"
+// Example: VOLUMES=app1:/app1,data-01:/data-01,shared:/mnt/shared
+// Falls back to single DATA_PATH volume if VOLUMES is not set.
+const volumes = {};
+if (process.env.VOLUMES) {
+  process.env.VOLUMES.split(',').forEach(entry => {
+    const idx = entry.indexOf(':');
+    if (idx < 1) return;
+    const label = entry.slice(0, idx).trim();
+    const mountPath = path.resolve(entry.slice(idx + 1).trim());
+    if (label && mountPath) volumes[label] = mountPath;
+  });
+}
+if (Object.keys(volumes).length === 0) {
+  // default: single volume from DATA_PATH
+  volumes['data'] = DATA_PATH;
+}
+// Ensure all volume dirs exist
+Object.values(volumes).forEach(p => fs.ensureDirSync(p));
+
 // ─── Configuration ────────────────────────────────────────────────────────────
 const cfg = {
   username: process.env.USERNAME || process.env.APP_USERNAME || 'admin',
@@ -31,7 +52,6 @@ const cfg = {
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || String(50 * 1024 * 1024 * 1024)), // 50 GB
 };
 
-fs.ensureDirSync(DATA_PATH);
 fs.ensureDirSync(TEMP_PATH);
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -59,17 +79,28 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: 'Unauthorized' });
 }
 
-function safePath(userPath) {
-  if (!userPath) return DATA_PATH;
+function volumeRoot(volName) {
+  const root = volumes[volName];
+  if (!root) throw new Error(`Unknown volume: "${volName}". Available: ${Object.keys(volumes).join(', ')}`);
+  return root;
+}
+
+function safePath(userPath, volName) {
+  const root = volumeRoot(volName || Object.keys(volumes)[0]);
+  if (!userPath || userPath === '/') return root;
   const clean = String(userPath).replace(/\.\./g, '').replace(/\/+/g, '/');
-  const full = path.resolve(DATA_PATH, clean.replace(/^\//, ''));
-  if (!full.startsWith(DATA_PATH)) throw new Error('Invalid path');
+  const full = path.resolve(root, clean.replace(/^\//, ''));
+  if (!full.startsWith(root)) throw new Error('Invalid path');
   return full;
 }
 
-function relativePath(full) {
-  const rel = path.relative(DATA_PATH, full);
+function relativePath(full, root) {
+  const rel = path.relative(root, full);
   return rel ? '/' + rel : '/';
+}
+
+function volParam(req) {
+  return req.query.volume || req.body?.volume || Object.keys(volumes)[0];
 }
 
 function hasCustomLogo() {
@@ -98,6 +129,13 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+app.get('/api/volumes', requireAuth, (req, res) => {
+  res.json(Object.entries(volumes).map(([label, mountPath]) => ({
+    label,
+    mountPath,
+  })));
+});
+
 app.post('/api/auth/login', authLimiter, (req, res) => {
   const { username, password } = req.body;
   if (username === cfg.username && password === cfg.password) {
@@ -119,7 +157,9 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 // ─── File Listing ─────────────────────────────────────────────────────────────
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
-    const dirPath = safePath(req.query.path);
+    const vol = volParam(req);
+    const root = volumeRoot(vol);
+    const dirPath = safePath(req.query.path, vol);
     if (!await fs.pathExists(dirPath)) return res.status(404).json({ error: 'Path not found' });
     const stat = await fs.stat(dirPath);
     if (!stat.isDirectory()) return res.status(400).json({ error: 'Not a directory' });
@@ -132,7 +172,7 @@ app.get('/api/files', requireAuth, async (req, res) => {
         const isDir = e.isDirectory();
         return {
           name: e.name,
-          path: relativePath(ep),
+          path: relativePath(ep, root),
           isDirectory: isDir,
           size: s.size,
           modified: s.mtime,
@@ -149,7 +189,7 @@ app.get('/api/files', requireAuth, async (req, res) => {
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
 
-    res.json({ path: relativePath(dirPath), files });
+    res.json({ path: relativePath(dirPath, root), volume: vol, files });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -157,11 +197,13 @@ app.get('/api/files', requireAuth, async (req, res) => {
 
 app.get('/api/files/info', requireAuth, async (req, res) => {
   try {
-    const fp = safePath(req.query.path);
+    const vol = volParam(req);
+    const root = volumeRoot(vol);
+    const fp = safePath(req.query.path, vol);
     const s = await fs.stat(fp);
     res.json({
       name: path.basename(fp),
-      path: relativePath(fp),
+      path: relativePath(fp, root),
       size: s.size,
       modified: s.mtime,
       created: s.birthtime,
@@ -185,7 +227,9 @@ const upload = multer({ storage, limits: { fileSize: cfg.maxFileSize } });
 
 app.post('/api/files/upload', requireAuth, upload.array('files', 500), async (req, res) => {
   try {
-    const targetDir = safePath(req.body.path || '/');
+    const vol = volParam(req);
+    const root = volumeRoot(vol);
+    const targetDir = safePath(req.body.path || '/', vol);
     await fs.ensureDir(targetDir);
 
     const relPaths = [].concat(req.body['relativePaths[]'] || req.body.relativePaths || []);
@@ -194,10 +238,10 @@ app.post('/api/files/upload', requireAuth, upload.array('files', 500), async (re
     for (let i = 0; i < (req.files || []).length; i++) {
       const file = req.files[i];
       const relPath = relPaths[i] || file.originalname;
-      const finalPath = safePath(path.join(relativePath(targetDir), relPath));
+      const finalPath = safePath(path.join(relativePath(targetDir, root), relPath), vol);
       await fs.ensureDir(path.dirname(finalPath));
       await fs.move(file.path, finalPath, { overwrite: true });
-      results.push({ name: path.basename(finalPath), path: relativePath(finalPath), size: file.size });
+      results.push({ name: path.basename(finalPath), path: relativePath(finalPath, root), size: file.size });
     }
     res.json({ success: true, files: results });
   } catch (err) {
@@ -209,7 +253,7 @@ app.post('/api/files/upload', requireAuth, upload.array('files', 500), async (re
 // ─── Download ─────────────────────────────────────────────────────────────────
 app.get('/api/files/download', requireAuth, async (req, res) => {
   try {
-    const fp = safePath(req.query.path);
+    const fp = safePath(req.query.path, req.query.volume);
     if (!await fs.pathExists(fp)) return res.status(404).json({ error: 'File not found' });
     const s = await fs.stat(fp);
 
@@ -255,7 +299,7 @@ app.get('/api/files/download', requireAuth, async (req, res) => {
 // ─── Preview ──────────────────────────────────────────────────────────────────
 app.get('/api/files/preview', requireAuth, async (req, res) => {
   try {
-    const fp = safePath(req.query.path);
+    const fp = safePath(req.query.path, req.query.volume);
     if (!await fs.pathExists(fp)) return res.status(404).json({ error: 'File not found' });
     const s = await fs.stat(fp);
     if (s.isDirectory()) return res.status(400).json({ error: 'Cannot preview directory' });
@@ -290,9 +334,10 @@ app.get('/api/files/preview', requireAuth, async (req, res) => {
 // ─── File Operations ──────────────────────────────────────────────────────────
 app.post('/api/files/mkdir', requireAuth, async (req, res) => {
   try {
-    const dp = safePath(req.body.path);
+    const vol = volParam(req);
+    const dp = safePath(req.body.path, vol);
     await fs.ensureDir(dp);
-    res.json({ success: true, path: relativePath(dp) });
+    res.json({ success: true, path: relativePath(dp, volumeRoot(vol)) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -300,8 +345,9 @@ app.post('/api/files/mkdir', requireAuth, async (req, res) => {
 
 app.delete('/api/files', requireAuth, async (req, res) => {
   try {
-    const fp = safePath(req.query.path || req.body?.path);
-    if (fp === DATA_PATH) return res.status(400).json({ error: 'Cannot delete root' });
+    const vol = req.query.volume || Object.keys(volumes)[0];
+    const fp = safePath(req.query.path || req.body?.path, vol);
+    if (fp === volumeRoot(vol)) return res.status(400).json({ error: 'Cannot delete root' });
     await fs.remove(fp);
     res.json({ success: true });
   } catch (err) {
@@ -311,11 +357,13 @@ app.delete('/api/files', requireAuth, async (req, res) => {
 
 app.post('/api/files/move', requireAuth, async (req, res) => {
   try {
-    const src = safePath(req.body.src);
-    const dst = safePath(req.body.dst);
+    const vol = volParam(req);
+    const root = volumeRoot(vol);
+    const src = safePath(req.body.src, vol);
+    const dst = safePath(req.body.dst, vol);
     await fs.ensureDir(path.dirname(dst));
     await fs.move(src, dst, { overwrite: !!req.body.overwrite });
-    res.json({ success: true, path: relativePath(dst) });
+    res.json({ success: true, path: relativePath(dst, root) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -323,11 +371,13 @@ app.post('/api/files/move', requireAuth, async (req, res) => {
 
 app.post('/api/files/copy', requireAuth, async (req, res) => {
   try {
-    const src = safePath(req.body.src);
-    const dst = safePath(req.body.dst);
+    const vol = volParam(req);
+    const root = volumeRoot(vol);
+    const src = safePath(req.body.src, vol);
+    const dst = safePath(req.body.dst, vol);
     await fs.ensureDir(path.dirname(dst));
     await fs.copy(src, dst, { overwrite: !!req.body.overwrite });
-    res.json({ success: true, path: relativePath(dst) });
+    res.json({ success: true, path: relativePath(dst, root) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -336,7 +386,7 @@ app.post('/api/files/copy', requireAuth, async (req, res) => {
 // ─── Permissions ──────────────────────────────────────────────────────────────
 app.post('/api/files/chmod', requireAuth, async (req, res) => {
   try {
-    const fp = safePath(req.body.path);
+    const fp = safePath(req.body.path, volParam(req));
     const modeStr = String(req.body.mode || '755').replace(/[^0-7]/g, '');
     if (!modeStr) return res.status(400).json({ error: 'Invalid mode' });
     if (req.body.recursive) {
@@ -352,7 +402,7 @@ app.post('/api/files/chmod', requireAuth, async (req, res) => {
 
 app.post('/api/files/chown', requireAuth, async (req, res) => {
   try {
-    const fp = safePath(req.body.path);
+    const fp = safePath(req.body.path, volParam(req));
     const uid = parseInt(req.body.uid);
     const gid = parseInt(req.body.gid);
     if (isNaN(uid) || isNaN(gid)) return res.status(400).json({ error: 'Invalid uid/gid' });
@@ -368,7 +418,7 @@ app.post('/api/files/chown', requireAuth, async (req, res) => {
 });
 
 // ─── S3 ───────────────────────────────────────────────────────────────────────
-const S3_CONFIG_FILE = path.join(DATA_PATH, '.pvcbrowser-s3.json');
+const S3_CONFIG_FILE = path.join(Object.values(volumes)[0], '.pvcbrowser-s3.json');
 
 let s3Cfg = {
   endpoint: process.env.S3_ENDPOINT || '',

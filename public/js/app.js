@@ -5,6 +5,8 @@ const state = {
   authenticated: false,
   username: null,
   currentPath: '/',
+  currentVolume: '',       // active volume label
+  volumes: [],             // [{ label, mountPath }]
   viewMode: localStorage.getItem('viewMode') || 'grid',
   selected: new Set(),
   files: [],
@@ -35,16 +37,16 @@ const api = {
   post: (url, body) => api.request('POST', url, body),
   del: (url, body) => api.request('DELETE', url, body),
   files: {
-    list: (p) => api.get(`/api/files?path=${encodeURIComponent(p)}`),
-    info: (p) => api.get(`/api/files/info?path=${encodeURIComponent(p)}`),
-    mkdir: (p) => api.post('/api/files/mkdir', { path: p }),
-    delete: (p) => api.del(`/api/files?path=${encodeURIComponent(p)}`),
-    move: (src, dst) => api.post('/api/files/move', { src, dst }),
-    copy: (src, dst) => api.post('/api/files/copy', { src, dst }),
-    chmod: (p, mode, recursive) => api.post('/api/files/chmod', { path: p, mode, recursive }),
-    chown: (p, uid, gid, recursive) => api.post('/api/files/chown', { path: p, uid, gid, recursive }),
-    previewUrl: (p) => `/api/files/preview?path=${encodeURIComponent(p)}`,
-    downloadUrl: (p) => `/api/files/download?path=${encodeURIComponent(p)}`,
+    list: (p, vol) => api.get(`/api/files?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(vol || state.currentVolume)}`),
+    info: (p, vol) => api.get(`/api/files/info?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(vol || state.currentVolume)}`),
+    mkdir: (p) => api.post('/api/files/mkdir', { path: p, volume: state.currentVolume }),
+    delete: (p) => api.del(`/api/files?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(state.currentVolume)}`),
+    move: (src, dst) => api.post('/api/files/move', { src, dst, volume: state.currentVolume }),
+    copy: (src, dst) => api.post('/api/files/copy', { src, dst, volume: state.currentVolume }),
+    chmod: (p, mode, recursive) => api.post('/api/files/chmod', { path: p, mode, recursive, volume: state.currentVolume }),
+    chown: (p, uid, gid, recursive) => api.post('/api/files/chown', { path: p, uid, gid, recursive, volume: state.currentVolume }),
+    previewUrl: (p) => `/api/files/preview?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(state.currentVolume)}`,
+    downloadUrl: (p) => `/api/files/download?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(state.currentVolume)}`,
   },
   s3: {
     getConfig: () => api.get('/api/s3/config'),
@@ -62,6 +64,7 @@ function uploadFiles(files, relativePaths, targetPath) {
   return new Promise((resolve, reject) => {
     const fd = new FormData();
     fd.append('path', targetPath);
+    fd.append('volume', state.currentVolume);
     files.forEach((file, i) => {
       fd.append('files', file);
       fd.append('relativePaths[]', relativePaths ? relativePaths[i] : file.name);
@@ -275,8 +278,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     if (data.success) {
       state.authenticated = true;
       state.username = data.username;
-      showApp();
-      navigateTo('/');
+      await startApp();
     } else {
       errEl.textContent = data.error || 'Login failed';
       errEl.classList.remove('hidden');
@@ -325,6 +327,41 @@ function renderBreadcrumb(p) {
     if (!el.classList.contains('active')) {
       el.addEventListener('click', () => navigateTo(el.dataset.path));
     }
+  });
+}
+
+async function loadVolumes() {
+  const vols = await api.get('/api/volumes');
+  if (!vols || !Array.isArray(vols)) return;
+  state.volumes = vols;
+  if (!state.currentVolume || !vols.find(v => v.label === state.currentVolume)) {
+    state.currentVolume = vols[0]?.label || '';
+  }
+  renderVolumeTabs();
+}
+
+function renderVolumeTabs() {
+  const tabBar = document.getElementById('volume-tabs');
+  if (!tabBar) return;
+  if (state.volumes.length <= 1) { tabBar.classList.add('hidden'); return; }
+  tabBar.classList.remove('hidden');
+  tabBar.innerHTML = state.volumes.map(v => `
+    <button class="volume-tab${v.label === state.currentVolume ? ' active' : ''}" data-vol="${v.label}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+      ${v.label}
+      <span class="vol-path">${v.mountPath}</span>
+    </button>
+  `).join('');
+
+  tabBar.querySelectorAll('.volume-tab').forEach(tab => {
+    tab.addEventListener('click', async () => {
+      if (tab.dataset.vol === state.currentVolume) return;
+      state.currentVolume = tab.dataset.vol;
+      state.currentPath = '/';
+      state.selected.clear();
+      renderVolumeTabs();
+      await navigateTo('/');
+    });
   });
 }
 
@@ -1487,20 +1524,23 @@ async function loadSystemView() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+async function startApp() {
+  showApp();
+  await loadVolumes();
+  await navigateTo('/');
+}
+
 async function init() {
   await loadConfig();
-
   try {
     const me = await fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null);
     if (me && me.username) {
       state.authenticated = true;
       state.username = me.username;
-      showApp();
-      navigateTo('/');
+      await startApp();
       return;
     }
   } catch {}
-
   showLogin();
 }
 

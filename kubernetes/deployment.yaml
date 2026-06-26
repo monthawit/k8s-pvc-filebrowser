@@ -47,6 +47,12 @@ spec:
                 configMapKeyRef:
                   name: filebrowser-config
                   key: DATA_PATH
+            # Multi-volume support (uncomment and set VOLUMES in configmap):
+            # - name: VOLUMES
+            #   valueFrom:
+            #     configMapKeyRef:
+            #       name: filebrowser-config
+            #       key: VOLUMES
             # From Secret
             - name: APP_USERNAME
               valueFrom:
@@ -95,16 +101,19 @@ spec:
             #       name: filebrowser-config
             #       key: S3_PATH_STYLE
           volumeMounts:
-            # ── Change mountPath to match your DATA_PATH ─────────────────────
-            # Example 1: default
+            # ── Single volume (default) ───────────────────────────────────────
             - name: data
               mountPath: /data
-            # Example 2: custom path — also set DATA_PATH=/mydata in configmap
-            # - name: data
-            #   mountPath: /mydata
-            # Example 3: mount at /app1
-            # - name: data
+
+            # ── Multi-volume example ──────────────────────────────────────────
+            # Mount multiple PVCs at different paths.
+            # Labels and paths must match the VOLUMES env var in configmap.
+            # Example: VOLUMES=app1:/app1,data-01:/data-01
+            #
+            # - name: pvc-app1
             #   mountPath: /app1
+            # - name: pvc-data-01
+            #   mountPath: /data-01
             # ─────────────────────────────────────────────────────────────────
             # Optional: mount a custom logo
             # - name: logo
@@ -136,6 +145,13 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: filebrowser-data
+        # Multi-volume: add extra PVCs here
+        # - name: pvc-app1
+        #   persistentVolumeClaim:
+        #     claimName: app1-pvc
+        # - name: pvc-data-01
+        #   persistentVolumeClaim:
+        #     claimName: data-01-pvc
         # Optional: ConfigMap with custom logo
         # - name: logo
         #   configMap:
