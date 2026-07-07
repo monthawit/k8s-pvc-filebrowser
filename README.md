@@ -12,6 +12,7 @@ A web-based file manager for Kubernetes PVC (Persistent Volume Claims). Upload, 
 | **File Download** | Single file or folder (as ZIP) |
 | **File Preview** | Images, video, audio, PDF, text/code (syntax highlighted) |
 | **File Operations** | Move, copy, rename, delete, create folder (multi-select supported) |
+| **Multi-PVC** | Mount multiple PVCs at once, switch between them, copy/move files across PVCs |
 | **Permissions** | chmod with octal mode, chown with UID/GID, recursive option |
 | **S3 Storage** | Browse, preview, download, copy S3 objects to PVC |
 | **System Info** | UID/GID display, copy-able shell commands for permission management |
@@ -119,6 +120,75 @@ Supported logo formats: `logo.png`, `logo.svg`, `logo.jpg`
 | `S3_PATH_STYLE` | Set `true` for MinIO/self-hosted S3 |
 
 S3 can also be configured through the UI (S3 Storage → Configure S3). Config is stored in `/data/.pvcbrowser-s3.json`.
+
+---
+
+## Multi-PVC Support & Cross-Volume Copy/Move
+
+The app can mount and browse **more than one PVC at the same time**, and lets you copy or move files directly between them — handy for migrating data from PVC A to PVC B without an intermediate download/upload.
+
+### 1. Mount additional PVCs
+
+Add a PVC + volume + volumeMount for each extra volume in `kubernetes/deployment.yaml`:
+
+```yaml
+volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: filebrowser-data
+  - name: pvc-b
+    persistentVolumeClaim:
+      claimName: pvc-b-data          # the target PVC you're migrating to
+
+containers:
+  - name: filebrowser
+    volumeMounts:
+      - name: data
+        mountPath: /data
+      - name: pvc-b
+        mountPath: /pvc-b
+```
+
+Create the second PVC (copy `kubernetes/pvc.yaml`, rename, adjust `storageClassName`/size) and apply it before the deployment.
+
+### 2. Declare the volumes with `VOLUMES`
+
+Set the `VOLUMES` env var (via `configmap.yaml` or directly on the container) as `label:/mount/path` pairs, comma-separated:
+
+```yaml
+# configmap.yaml
+VOLUMES: "data:/data,pvc-b:/pvc-b"
+```
+
+```yaml
+# deployment.yaml — wire it into the container env
+- name: VOLUMES
+  valueFrom:
+    configMapKeyRef:
+      name: filebrowser-config
+      key: VOLUMES
+```
+
+If `VOLUMES` is not set, the app falls back to a single volume using `DATA_PATH`. Labels in `VOLUMES` are just display names — they don't need to match the PVC or claimName.
+
+### 3. Copy/move files between PVCs
+
+Once more than one volume is configured:
+
+- A **volume tab bar** appears at the top of the file browser to switch between PVCs.
+- Select file(s) → **Move to...** or **Copy to...** → a **Destination Volume** dropdown appears in the dialog alongside the destination path.
+- Pick the target PVC and destination folder, then confirm. Files stream from the source PVC's mount to the destination PVC's mount inside the pod (works even when the two PVCs are backed by different storage classes/volumes, since it's a regular file copy, not a filesystem-level `mv`).
+
+This also works via the API directly:
+
+```bash
+curl -X POST http://localhost:3000/api/files/copy \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=<session cookie>" \
+  -d '{"src":"/some/folder","dst":"/some/folder","srcVolume":"data","dstVolume":"pvc-b"}'
+```
+
+`srcVolume`/`dstVolume` are optional — omit `dstVolume` to copy/move within the same volume (the previous single-volume behavior).
 
 ---
 

@@ -357,13 +357,14 @@ app.delete('/api/files', requireAuth, async (req, res) => {
 
 app.post('/api/files/move', requireAuth, async (req, res) => {
   try {
-    const vol = volParam(req);
-    const root = volumeRoot(vol);
-    const src = safePath(req.body.src, vol);
-    const dst = safePath(req.body.dst, vol);
+    const srcVol = req.body.srcVolume || volParam(req);
+    const dstVol = req.body.dstVolume || srcVol;
+    const dstRoot = volumeRoot(dstVol);
+    const src = safePath(req.body.src, srcVol);
+    const dst = safePath(req.body.dst, dstVol);
     await fs.ensureDir(path.dirname(dst));
     await fs.move(src, dst, { overwrite: !!req.body.overwrite });
-    res.json({ success: true, path: relativePath(dst, root) });
+    res.json({ success: true, path: relativePath(dst, dstRoot), volume: dstVol });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -371,13 +372,14 @@ app.post('/api/files/move', requireAuth, async (req, res) => {
 
 app.post('/api/files/copy', requireAuth, async (req, res) => {
   try {
-    const vol = volParam(req);
-    const root = volumeRoot(vol);
-    const src = safePath(req.body.src, vol);
-    const dst = safePath(req.body.dst, vol);
+    const srcVol = req.body.srcVolume || volParam(req);
+    const dstVol = req.body.dstVolume || srcVol;
+    const dstRoot = volumeRoot(dstVol);
+    const src = safePath(req.body.src, srcVol);
+    const dst = safePath(req.body.dst, dstVol);
     await fs.ensureDir(path.dirname(dst));
     await fs.copy(src, dst, { overwrite: !!req.body.overwrite });
-    res.json({ success: true, path: relativePath(dst, root) });
+    res.json({ success: true, path: relativePath(dst, dstRoot), volume: dstVol });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

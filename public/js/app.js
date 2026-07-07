@@ -41,8 +41,16 @@ const api = {
     info: (p, vol) => api.get(`/api/files/info?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(vol || state.currentVolume)}`),
     mkdir: (p) => api.post('/api/files/mkdir', { path: p, volume: state.currentVolume }),
     delete: (p) => api.del(`/api/files?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(state.currentVolume)}`),
-    move: (src, dst) => api.post('/api/files/move', { src, dst, volume: state.currentVolume }),
-    copy: (src, dst) => api.post('/api/files/copy', { src, dst, volume: state.currentVolume }),
+    move: (src, dst, srcVolume, dstVolume) => api.post('/api/files/move', {
+      src, dst,
+      srcVolume: srcVolume || state.currentVolume,
+      dstVolume: dstVolume || srcVolume || state.currentVolume,
+    }),
+    copy: (src, dst, srcVolume, dstVolume) => api.post('/api/files/copy', {
+      src, dst,
+      srcVolume: srcVolume || state.currentVolume,
+      dstVolume: dstVolume || srcVolume || state.currentVolume,
+    }),
     chmod: (p, mode, recursive) => api.post('/api/files/chmod', { path: p, mode, recursive, volume: state.currentVolume }),
     chown: (p, uid, gid, recursive) => api.post('/api/files/chown', { path: p, uid, gid, recursive, volume: state.currentVolume }),
     previewUrl: (p) => `/api/files/preview?path=${encodeURIComponent(p)}&volume=${encodeURIComponent(state.currentVolume)}`,
@@ -724,9 +732,20 @@ async function confirmDelete(paths, names) {
 
 function showMoveModal(paths, op) {
   const label = paths.length === 1 ? `"${pathBasename(paths[0])}"` : `${paths.length} items`;
+  const srcVolume = state.currentVolume;
+  const showVolPicker = state.volumes.length > 1;
+  const volOptions = state.volumes.map(v =>
+    `<option value="${v.label}"${v.label === srcVolume ? ' selected' : ''}>${v.label}</option>`
+  ).join('');
   showModal(`
-    <div class="modal-header"><h2>${op === 'move' ? 'Move' : 'Copy'} ${label}</h2><p>Enter destination path (relative to data root)</p></div>
+    <div class="modal-header"><h2>${op === 'move' ? 'Move' : 'Copy'} ${label}</h2><p>Enter destination path${showVolPicker ? ' and volume' : ' (relative to data root)'}</p></div>
     <div class="modal-body">
+      ${showVolPicker ? `
+      <div class="field-row">
+        <label>Destination Volume (PVC)</label>
+        <select id="dst-volume">${volOptions}</select>
+        <div class="hint">Pick a different PVC to ${op} across volumes</div>
+      </div>` : ''}
       <div class="field-row">
         <label>Destination Path</label>
         <input id="dst-path" type="text" value="${state.currentPath}" placeholder="/destination/folder" />
@@ -742,16 +761,18 @@ function showMoveModal(paths, op) {
   document.getElementById('confirm-mv').onclick = async () => {
     const dst = document.getElementById('dst-path').value.trim();
     if (!dst) return;
+    const dstVolume = showVolPicker ? document.getElementById('dst-volume').value : srcVolume;
     closeModal();
     let ok = 0;
     for (const src of paths) {
       const name = pathBasename(src);
       const dstPath = pathJoin(dst, name);
       const fn = op === 'move' ? api.files.move : api.files.copy;
-      const r = await fn(src, dstPath);
+      const r = await fn(src, dstPath, srcVolume, dstVolume);
       if (r && !r.error) ok++;
     }
-    toast(`${op === 'move' ? 'Moved' : 'Copied'} ${ok} item(s)`, ok > 0 ? 'success' : 'error');
+    const crossVol = dstVolume !== srcVolume;
+    toast(`${op === 'move' ? 'Moved' : 'Copied'} ${ok} item(s)${crossVol ? ` to "${dstVolume}"` : ''}`, ok > 0 ? 'success' : 'error');
     state.selected.clear();
     await loadFiles(state.currentPath);
   };
