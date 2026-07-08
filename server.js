@@ -22,9 +22,12 @@ const DATA_PATH = path.resolve(process.env.DATA_PATH || '/data');
 const TEMP_PATH = process.env.TEMP_PATH || '/tmp/pvcbrowser-uploads';
 
 // ─── Multi-volume support ─────────────────────────────────────────────────────
-// VOLUMES env var format: "label1:/mount/path1,label2:/mount/path2"
-// Example: VOLUMES=app1:/app1,data-01:/data-01,shared:/mnt/shared
-// Falls back to single DATA_PATH volume if VOLUMES is not set.
+// Option A — VOLUMES env var: "label1:/mount/path1,label2:/mount/path2"
+//   Example: VOLUMES=app1:/app1,data-01:/data-01,shared:/mnt/shared
+// Option B — numbered DATA_PATH env vars (no formatting/ConfigMap needed):
+//   DATA_PATH=/data, DATA_PATH2=/pvc-b, DATA_PATH3=/pvc-c, ...
+//   Each becomes a volume labeled data, data2, data3, ...
+// Falls back to a single DATA_PATH volume if neither is set.
 const volumes = {};
 if (process.env.VOLUMES) {
   process.env.VOLUMES.split(',').forEach(entry => {
@@ -34,6 +37,14 @@ if (process.env.VOLUMES) {
     const mountPath = path.resolve(entry.slice(idx + 1).trim());
     if (label && mountPath) volumes[label] = mountPath;
   });
+}
+if (Object.keys(volumes).length === 0) {
+  if (process.env.DATA_PATH) volumes['data'] = DATA_PATH;
+  let i = 2;
+  while (process.env[`DATA_PATH${i}`]) {
+    volumes[`data${i}`] = path.resolve(process.env[`DATA_PATH${i}`]);
+    i++;
+  }
 }
 if (Object.keys(volumes).length === 0) {
   // default: single volume from DATA_PATH

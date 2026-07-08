@@ -151,9 +151,21 @@ containers:
 
 Create the second PVC (copy `kubernetes/pvc.yaml`, rename, adjust `storageClassName`/size) and apply it before the deployment.
 
-### 2. Declare the volumes with `VOLUMES`
+### 2. Declare the volumes
 
-Set the `VOLUMES` env var (via `configmap.yaml` or directly on the container) as `label:/mount/path` pairs, comma-separated:
+Two ways to tell the app about the extra mount — pick whichever fits your setup:
+
+**Option A — numbered `DATA_PATH` env vars (no ConfigMap needed).** Set plain env vars directly on the container, no formatting required:
+
+```
+DATA_PATH=/data
+DATA_PATH2=/pvc-b
+DATA_PATH3=/pvc-c   # add more as needed
+```
+
+Each becomes a volume labeled `data`, `data2`, `data3`, ... in the order declared. This is the simplest option on platforms (like Kubly) where you can only set plain env vars on the container and don't manage a `deployment.yaml`/ConfigMap directly.
+
+**Option B — `VOLUMES` env var** (via `configmap.yaml` or directly on the container), as `label:/mount/path` pairs, comma-separated:
 
 ```yaml
 # configmap.yaml
@@ -169,7 +181,9 @@ VOLUMES: "data:/data,pvc-b:/pvc-b"
       key: VOLUMES
 ```
 
-If `VOLUMES` is not set, the app falls back to a single volume using `DATA_PATH`. Labels in `VOLUMES` are just display names — they don't need to match the PVC or claimName.
+Use this when you want custom, human-readable volume labels (the UI volume tabs show these labels).
+
+If neither `VOLUMES` nor `DATA_PATH2`/... is set, the app falls back to a single volume using `DATA_PATH` (default `/data`).
 
 ### 3. Copy/move files between PVCs
 
