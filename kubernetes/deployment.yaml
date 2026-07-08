@@ -29,7 +29,7 @@ spec:
 
       containers:
         - name: filebrowser
-          image: registry.kubly.cloud/catalogs/k8s-pvc-filebrowser:v7
+          image: registry.kubly.cloud/catalogs/k8s-pvc-filebrowser:v8
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
