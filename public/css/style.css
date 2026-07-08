@@ -229,11 +229,15 @@ table { border-collapse: collapse; width: 100%; }
 .file-card-check {
   position: absolute; top: 6px; left: 6px;
   width: 20px; height: 20px; border-radius: 50%;
-  background: var(--primary); border: 2px solid white;
-  display: none; align-items: center; justify-content: center;
+  background: white; border: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .15s, background .15s, border-color .15s;
+  cursor: pointer; z-index: 1;
 }
 .file-card-check svg { width: 12px; height: 12px; stroke: white; stroke-width: 3; }
-.file-card.selected .file-card-check { display: flex; }
+.file-card:hover .file-card-check,
+.file-card.selected .file-card-check { opacity: 1; }
+.file-card.selected .file-card-check { background: var(--primary); border-color: var(--primary); }
 
 /* ─── File List ──────────────────────────────────────────────────────────────── */
 .file-list { overflow-x: auto; }

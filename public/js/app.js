@@ -429,6 +429,11 @@ function renderGrid(files) {
     const i = parseInt(card.dataset.index);
     const f = state.files[i];
 
+    card.querySelector('.file-card-check').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSelect(f.path, card);
+    });
+
     card.addEventListener('click', (e) => {
       if (e.ctrlKey || e.metaKey || e.shiftKey) {
         toggleSelect(f.path, card);
